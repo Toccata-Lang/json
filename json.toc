@@ -1,0 +1,120 @@
+(add-ns grmr (git-dependency "https://github.com/Toccata-Lang/grammar.git"
+                             "grammar.toc"
+                             :sha "5a3a870"))
+(add-ns rd (git-dependency "https://github.com/Toccata-Lang/recursive-descent.git"
+                           "recursive-descent.toc"
+                           :sha "6378d02"))
+
+(def whitespace
+  (grmr/recursive-rule "whitespace"
+                       (grmr/none-or-more (grmr/any " " "\t" "\r" "\n" "\f"))))
+
+(def integer-value
+  (grmr/rule "integer"
+             (grmr/apply-fn (fn [negate digits]
+                              (let [magnitude (str-to-int (to-str digits))]
+                                (either (and negate
+                                             (maybe (* -1 magnitude)))
+                                        magnitude)))
+                            (grmr/ignore whitespace)
+                            (grmr/optional "-")
+                            (grmr/one-or-more grmr/digit))))
+
+(def float-value
+  (grmr/rule "float"
+             (grmr/apply-fn (fn [negate whole-digits fract-digits]
+                              (str negate (to-str whole-digits) "."
+                                   (to-str fract-digits)))
+                            (grmr/ignore whitespace)
+                            (grmr/optional "-")
+                            (grmr/one-or-more grmr/digit)
+                            (grmr/ignore ".")
+                            (grmr/one-or-more grmr/digit))))
+
+(defn escaped-char [char result]
+  (grmr/apply-fn (fn [& _] result) char))
+
+(def escaped-chars
+  (grmr/rule "escaped chars"
+             (grmr/all "\\" (grmr/any (escaped-char "\"" "\"")
+                                      (escaped-char "\\" "\\")
+                                      (escaped-char "/" "/")
+                                      (escaped-char "b" "\b")
+                                      (escaped-char "f" "\f")
+                                      (escaped-char "n" "\n")
+                                      (escaped-char "r" "\r")
+                                      (escaped-char "t" "\t")))))
+
+(def string-value
+  (grmr/recursive-rule "string"
+                       (grmr/apply-fn identity
+                                      (grmr/ignore whitespace)
+                                      (grmr/apply-fn to-str
+                                                     (grmr/ignore "\"")
+                                                     (grmr/none-or-more
+                                                      (grmr/any escaped-chars
+                                                                (grmr/not-char "\"")))
+                                                     (grmr/ignore "\"")))))
+
+
+(def value (grmr/recurse "value"))
+
+(def comma (grmr/all whitespace "," whitespace))
+
+(def array
+  (grmr/rule "array"
+             (grmr/apply-fn (fn [items]
+                              (either items
+                                      []))
+                            (grmr/ignore whitespace)
+                            (grmr/ignore "[")
+                            (grmr/optional
+                             (grmr/apply-fn (fn [items last-item]
+                                              (conj (flatten items) last-item))
+                                            (grmr/none-or-more (grmr/all value
+                                                                         (grmr/ignore comma)))
+                                            value))
+                            (grmr/ignore whitespace)
+                            (grmr/ignore "]"))))
+
+(def colon (grmr/all whitespace ":" whitespace))
+
+(def key-value-pair (grmr/all string-value
+                              (grmr/ignore colon)
+                              value))
+
+(def object
+  (grmr/rule "object"
+             (grmr/apply-fn (fn [kv-pairs]
+                              (reduce (either kv-pairs [])
+                                      {} (fn [m [k v]]
+                                           (assoc m k v))))
+                            (grmr/ignore whitespace)
+                            (grmr/ignore "{")
+                            (grmr/optional
+                             (grmr/apply-fn (fn [items last-item]
+                                              (conj (flatten items) last-item))
+                                            (grmr/none-or-more (grmr/all key-value-pair
+                                                                         (grmr/ignore comma)))
+                                            key-value-pair))
+                            (grmr/ignore whitespace)
+                            (grmr/ignore "}"))))
+
+(def value
+  (grmr/recursive-rule "value"
+                       (grmr/any string-value
+                                 float-value
+                                 integer-value
+                                 object
+                                 array
+                                 (grmr/apply-fn (fn [_ _] (maybe 'true))
+                                                whitespace
+                                                "true")
+                                 (grmr/apply-fn (fn [_ _] nothing)
+                                                whitespace
+                                                "false")
+                                 (grmr/apply-fn (fn [_ _] 'null)
+                                                whitespace
+                                                "null"))))
+
+(def parse (rd/parser value))
